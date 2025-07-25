@@ -1,0 +1,39 @@
+name: Revert Merged Commits
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_branch:
+        description: 'Branch that was merged into dev'
+        required: true
+        type: string
+
+jobs:
+  revert-commits:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout dev branch
+        uses: actions/checkout@v3
+        with:
+          ref: dev
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+      - name: Fetch all branches
+        run: git fetch --all
+
+      - name: Find merge commit from source branch
+        id: find_merge
+        run: |
+          MERGE_COMMIT=$(git log dev --merges --pretty=format:"%H %s" | grep ${{ github.event.inputs.source_branch }} | head -n 1 | awk '{print $1}')
+          echo "Found merge commit: $MERGE_COMMIT"
+          echo "merge_commit=$MERGE_COMMIT" >> $GITHUB_OUTPUT
+
+      - name: Revert the merge commit
+        if: steps.find_merge.outputs.merge_commit != ''
+        run: |
+          git revert -m 1 ${{ steps.find_merge.outputs.merge_commit }} --no-edit
+          git push origin dev
