@@ -1,0 +1,36 @@
+name: Revert Merge from Branch into Master
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_branch:
+        description: 'Name of the branch that was merged into master'
+        required: true
+        type: string
+
+jobs:
+  revert:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Needed to access full history
+
+      - name: Set up Git
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+
+      - name: Revert merge commit from ${{ github.event.inputs.source_branch }}
+        run: |
+          SOURCE_BRANCH=${{ github.event.inputs.source_branch }}
+          git checkout master
+          git pull origin master
+          MERGE_COMMIT=$(git log master --merges --pretty=format:"%H %s" | grep "Merge pull request" | grep "$SOURCE_BRANCH" | head -n 1 | awk '{print $1}')
+          if [ -z "$MERGE_COMMIT" ]; then
+            echo "No merge commit found from branch $SOURCE_BRANCH into master."
+            exit 1
+          fi
+          git revert -m 1 $MERGE_COMMIT
+          git push origin master
