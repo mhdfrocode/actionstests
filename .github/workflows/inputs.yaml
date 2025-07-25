@@ -1,39 +1,36 @@
-name: Revert Merged Commits
+name: Revert Merge from Branch into Master
 
 on:
   workflow_dispatch:
     inputs:
       source_branch:
-        description: 'Branch that was merged into dev'
+        description: 'Name of the branch that was merged into master'
         required: true
         type: string
 
 jobs:
-  revert-commits:
+  revert:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout dev branch
+      - name: Checkout repo
         uses: actions/checkout@v3
         with:
-          ref: dev
+          fetch-depth: 0  # Needed to access full history
 
-      - name: Configure Git
+      - name: Set up Git
         run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
 
-      - name: Fetch all branches
-        run: git fetch --all
-
-      - name: Find merge commit from source branch
-        id: find_merge
+      - name: Revert merge commit from ${{ github.event.inputs.source_branch }}
         run: |
-          MERGE_COMMIT=$(git log dev --merges --pretty=format:"%H %s" | grep ${{ github.event.inputs.source_branch }} | head -n 1 | awk '{print $1}')
-          echo "Found merge commit: $MERGE_COMMIT"
-          echo "merge_commit=$MERGE_COMMIT" >> $GITHUB_OUTPUT
-
-      - name: Revert the merge commit
-        if: steps.find_merge.outputs.merge_commit != ''
-        run: |
-          git revert -m 1 ${{ steps.find_merge.outputs.merge_commit }} --no-edit
-          git push origin dev
+          SOURCE_BRANCH=${{ github.event.inputs.source_branch }}
+          git checkout master
+          git pull origin master
+          MERGE_COMMIT=$(git log master --merges --pretty=format:"%H %s" | grep "Merge pull request" | grep "$SOURCE_BRANCH" | head -n 1 | awk '{print $1}')
+          if [ -z "$MERGE_COMMIT" ]; then
+            echo "No merge commit found from branch $SOURCE_BRANCH into master."
+            exit 1
+          fi
+          git revert -m 1 $MERGE_COMMIT
+          git push origin master
