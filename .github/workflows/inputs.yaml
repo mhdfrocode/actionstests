@@ -110,14 +110,14 @@ jobs:
           git checkout -b "$REVERT_BRANCH"
           git add .
           git commit -m "Staged revert of ${{ steps.find_commits.outputs.commit_to_revert }} with conflicts"
-          git remote set-url origin https://${{ secrets.PAT }}@github.com/FroCode/Python_Devops.git
+          git remote set-url origin https://${{ secrets.PAT }}@github.com:mhdfrocode/actionstests.git
           git push origin "$REVERT_BRANCH"
           echo "Pushed to branch $REVERT_BRANCH for manual conflict resolution"
           echo "Please resolve conflicts in branch $REVERT_BRANCH and create a PR to dev"
           exit 1
         else
           echo "No conflicts, pushing to dev"
-          git remote set-url origin https://${{ steps.PAT }}@github.com/FroCode/Python_Devops.git
+          git remote set-url origin https://${{ steps.PAT }}@github.com:mhdfrocode/actionstests.git
           git push origin dev
         fi
       env:
