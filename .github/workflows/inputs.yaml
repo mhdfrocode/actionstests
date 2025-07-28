@@ -1,36 +1,129 @@
-name: Revert Merge from Branch into Master
+name: manual-revert-workflow
 
 on:
   workflow_dispatch:
     inputs:
-      source_branch:
-        description: 'Name of the branch that was merged into master'
+      branch_name:
+        description: "Branch name to find and revert its merge commit in dev (e.g., f5)"
         required: true
-        type: string
 
 jobs:
-  revert:
+  revert-merge:
     runs-on: ubuntu-latest
+    
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v3
-        with:
-          fetch-depth: 0  # Needed to access full history
-
-      - name: Set up Git
-        run: |
-          git config --global user.name "mhdfrocode"
-          git config --global user.email "maamar.haddouche@capgemini.com"
-
-      - name: Revert merge commit from ${{ github.event.inputs.source_branch }}
-        run: |
-          SOURCE_BRANCH=${{ github.event.inputs.source_branch }}
-          git checkout master
-          git pull origin master
-          MERGE_COMMIT=$(git log master --merges --pretty=format:"%H %s" | grep "Merge pull request" | grep "$SOURCE_BRANCH" | head -n 1 | awk '{print $1}')
-          if [ -z "$MERGE_COMMIT" ]; then
-            echo "No merge commit found from branch $SOURCE_BRANCH into master."
-            exit 1
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Fetch all history for proper commit lookup
+        token: ${{ secrets.PAT }}  # Use PAT for push permissions
+        
+    - name: List all branches for debugging
+      run: git branch -a
+      
+    - name: Normalize branch name
+      id: normalize
+      run: |
+        # Strip 'remotes/origin/' prefix if present
+        BRANCH_NAME=$(echo "${{ github.event.inputs.branch_name }}" | sed 's#^remotes/origin/##')
+        echo "normalized_branch=$BRANCH_NAME" >> $GITHUB_OUTPUT
+        
+    - name: Validate branch exists
+      run: |
+        if ! git show-ref --quiet refs/remotes/origin/${{ steps.normalize.outputs.normalized_branch }}; then
+          echo "Error: Remote branch 'origin/${{ steps.normalize.outputs.normalized_branch }}' does not exist. Available branches:"
+          git branch -a
+          exit 1
+        fi
+        
+    - name: Switch to dev branch
+      run: git checkout dev
+      
+    - name: Debug merge commits
+      run: |
+        echo "Listing merge commits in dev:"
+        git log --merges --first-parent dev --oneline --graph
+        echo "Current commit on dev:"
+        git log -1 --oneline
+        
+    - name: Find last merge commit or commits
+      id: find_commits
+      run: |
+        MERGE_BASE=$(git merge-base dev origin/${{ steps.normalize.outputs.normalized_branch }})
+        MERGE_COMMIT=""
+        for COMMIT in $(git log --merges --first-parent dev --pretty=%H); do
+          SECOND_PARENT=$(git rev-list --parents -n 1 $COMMIT | awk '{print $3}')
+          if [ -n "$SECOND_PARENT" ] && git merge-base --is-ancestor $SECOND_PARENT origin/${{ steps.normalize.outputs.normalized_branch }}; then
+            if ! git merge-base --is-ancestor $SECOND_PARENT $MERGE_BASE; then
+              MERGE_COMMIT=$COMMIT
+              break
+            fi
           fi
-          git revert -m 1 $MERGE_COMMIT
-          git push origin master
+        done
+        if [ -z "$MERGE_COMMIT" ]; then
+          echo "No merge commit found. Checking for commits from ${{ steps.normalize.outputs.normalized_branch }} (possible fast-forward merge)..."
+          COMMITS=$(git log dev ^$(git rev-parse origin/dev^) --no-merges --oneline --first-parent origin/${{ steps.normalize.outputs.normalized_branch }} | head -n 1 | awk '{print $1}')
+          if [ -z "$COMMITS" ]; then
+            echo "Error: No merge commit or commits from branch '${{ steps.normalize.outputs.normalized_branch }}' found in dev"
+            exit 1
+          else
+            echo "Found commit from ${{ steps.normalize.outputs.normalized_branch }}: $COMMITS"
+            echo "commit_to_revert=$COMMITS" >> $GITHUB_OUTPUT
+            echo "is_merge_commit=false" >> $GITHUB_OUTPUT
+          fi
+        else
+          echo "Found merge commit: $MERGE_COMMIT"
+          echo "commit_to_revert=$MERGE_COMMIT" >> $GITHUB_OUTPUT
+          echo "is_merge_commit=true" >> $GITHUB_OUTPUT
+        fi
+        echo "Commit details:"
+        git show --summary ${{ steps.find_commits.outputs.commit_to_revert }}
+        
+    - name: Configure Git user
+      run: |
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "actions@github.com"
+        
+    - name: Attempt revert commit
+      id: revert
+      run: |
+        echo "Attempting to revert commit ${{ steps.find_commits.outputs.commit_to_revert }}"
+        if [ "${{ steps.find_commits.outputs.is_merge_commit }}" = "true" ]; then
+          git revert -m 1 --no-commit ${{ steps.find_commits.outputs.commit_to_revert }}
+        else
+          git revert --no-commit ${{ steps.find_commits.outputs.commit_to_revert }}
+        fi
+        if git status | grep -q "You have unmerged paths"; then
+          echo "Merge conflict detected during revert"
+          echo "has_conflict=true" >> $GITHUB_OUTPUT
+        else
+          git commit -m "Revert commit ${{ steps.find_commits.outputs.commit_to_revert }} from ${{ steps.normalize.outputs.normalized_branch }}"
+          echo "has_conflict=false" >> $GITHUB_OUTPUT
+        fi
+      continue-on-error: true
+        
+    - name: Handle revert result
+      run: |
+        if [ "${{ steps.revert.outputs.has_conflict }}" = "true" ]; then
+          echo "Creating branch for conflict resolution"
+          REVERT_BRANCH="revert-${{ steps.normalize.outputs.normalized_branch }}-$(date +%s)"
+          git checkout -b "$REVERT_BRANCH"
+          git add .
+          git commit -m "Staged revert of ${{ steps.find_commits.outputs.commit_to_revert }} with conflicts"
+          git remote set-url origin https://${{ secrets.PAT }}@github.com/FroCode/Python_Devops.git
+          git push origin "$REVERT_BRANCH"
+          echo "Pushed to branch $REVERT_BRANCH for manual conflict resolution"
+          echo "Please resolve conflicts in branch $REVERT_BRANCH and create a PR to dev"
+          exit 1
+        else
+          echo "No conflicts, pushing to dev"
+          git remote set-url origin https://${{ steps.PAT }}@github.com/FroCode/Python_Devops.git
+          git push origin dev
+        fi
+      env:
+        GIT_AUTHOR_NAME: "GitHub Actions"
+        GIT_AUTHOR_EMAIL: "actions@github.com"
+        
+    - name: Notify success
+      if: steps.revert.outputs.has_conflict != 'true'
+      run: echo "Successfully reverted commit ${{ steps.find_commits.outputs.commit_to_revert }} from branch '${{ steps.normalize.outputs.normalized_branch }}' in dev"
