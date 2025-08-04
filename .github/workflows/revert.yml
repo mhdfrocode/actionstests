@@ -1,4 +1,4 @@
-name: manual-revert-workflow
+name: manual-revert_2
 
 on:
   workflow_dispatch:
