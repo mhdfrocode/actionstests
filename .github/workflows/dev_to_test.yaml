@@ -24,7 +24,9 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.PAT }}
-
+      - name: pull_last_code
+        run: |
+          git pull    
       # Configure Git
       - name: Configure Git
         run: |
