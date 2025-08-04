@@ -1,0 +1,111 @@
+
+name: manual-revert-workflow
+
+on:
+  workflow_run:
+    workflows: ["Revert_Merge"]
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      force_push:
+        description: "Force push dev to test (overwrites test branch)"
+        required: false
+        default: "false"
+
+jobs:
+  push-to-test:
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      # Checkout repository
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PAT }}
+
+      # Configure Git
+      - name: Configure Git
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+
+      # Validate branches
+      - name: Validate branches
+        run: |
+          git fetch origin
+          if ! git ls-remote --heads origin dev | grep -q dev; then
+            echo "Error: dev branch does not exist"
+            exit 1
+          fi
+          if ! git ls-remote --heads origin test | grep -q test; then
+            echo "Creating test branch from dev"
+            git checkout dev
+            git push origin dev:test
+            exit 0
+          fi
+
+      # Push dev to test
+      - name: Push dev to test
+        id: push
+        run: |
+          git checkout test
+          git fetch origin dev
+          set +e
+          git merge origin/dev --no-ff --no-edit
+          STATUS=$?
+          set -e
+          if [ $STATUS -ne 0 ]; then
+            echo "Merge conflict detected"
+            TIMESTAMP=$(date +%s)
+            CONFLICT_BRANCH="conflict/dev-to-test-$TIMESTAMP"
+            git checkout -b "$CONFLICT_BRANCH"
+            git push origin "$CONFLICT_BRANCH"
+            gh pr create \
+              --base test \
+              --head "$CONFLICT_BRANCH" \
+              --title "Merge conflict: dev to test" \
+              --body "Automatic PR: Conflicts occurred while merging dev into test. Please resolve manually."
+            echo "conflict=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          git push origin test
+          echo "conflict=false" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.PAT }}
+
+      # Force push if requested
+      - name: Force push dev to test
+        if: github.event.inputs.force_push == 'true' && steps.push.outputs.conflict == 'false'
+        run: |
+          git checkout dev
+          git push origin dev:test --force
+          echo "Force pushed dev to test"
+        env:
+          GH_TOKEN: ${{ secrets.PAT }}
+
+      # Validate test branch
+      - name: Validate test branch
+        if: steps.push.outputs.conflict == 'false'
+        run: |
+          git fetch origin test
+          git checkout test
+          MERGE_COMMIT=$(git log --merges --pretty=%H -n 1)
+          if [ -z "$MERGE_COMMIT" ]; then
+            echo "No merge commit found in test branch"
+            exit 1
+          fi
+          echo "Merge commit validated: $MERGE_COMMIT"
+
+      # Notify on merge conflict
+      - name: Notify on merge conflict
+        if: steps.push.outputs.conflict == 'true'
+        run: |
+          gh issue create \
+            --title "Merge Conflict: Dev to Test" \
+            --body "Merge conflict occurred while merging dev into test. Conflict branch created. Check PR for details." \
+            --repo ${{ github.repository }}
+        env:
+          GH_TOKEN: ${{ secrets.PAT }}

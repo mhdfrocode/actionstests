@@ -1,0 +1,96 @@
+name: manual-revert-workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch_name:
+        description: "Feature branch whose last squash merge into dev should be reverted (e.g., f15)"
+        required: true
+
+jobs:
+  revert-squash-commit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PAT }}
+
+      - name: Normalize branch name
+        id: normalize
+        run: |
+          BRANCH_NAME=$(echo "${{ github.event.inputs.branch_name }}" | sed 's#^remotes/origin/##')
+          if [[ ! "$BRANCH_NAME" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
+            echo "Error: Invalid branch name '$BRANCH_NAME'"
+            exit 1
+          fi
+          echo "normalized_branch=$BRANCH_NAME" >> $GITHUB_OUTPUT
+
+      - name: Switch to dev
+        run: |
+          git fetch origin dev
+          git checkout dev
+          git pull origin dev
+
+      - name: Find latest squash merge commit for this branch
+        id: find_commit
+        run: |
+          PATTERN="${{ steps.normalize.outputs.normalized_branch }}"
+          COMMIT=$(git log dev --grep="from .*$PATTERN" --pretty=%H -n 1)
+          if [ -z "$COMMIT" ]; then
+            echo "No squash merge commit found in dev for '$PATTERN'"
+            exit 1
+          fi
+          echo "commit_sha=$COMMIT" >> $GITHUB_OUTPUT
+          echo "Found commit: $COMMIT"
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+
+      - name: Revert latest squash merge commit
+        id: revert
+        env:
+          GH_TOKEN: ${{ secrets.PAT }}
+        run: |
+          COMMIT="${{ steps.find_commit.outputs.commit_sha }}"
+          FEATURE="${{ steps.normalize.outputs.normalized_branch }}"
+          SHORT_HASH=$(echo "$COMMIT" | cut -c1-7)
+          TIMESTAMP=$(date +%s)
+
+          echo "Attempting to revert $COMMIT from $FEATURE..."
+
+          set +e
+          git revert "$COMMIT"
+          STATUS=$?
+          set -e
+
+          if [ $STATUS -ne 0 ]; then
+            echo "Conflict detected for $COMMIT"
+
+            BRANCH="revert-conflict/$FEATURE/$SHORT_HASH-$TIMESTAMP"
+
+            # Do not abort; keep conflict state
+            git checkout -b "$BRANCH"
+            git push origin "$BRANCH"
+
+            gh pr create \
+              --base dev \
+              --head "$BRANCH" \
+              --title "Conflict while reverting $COMMIT from $FEATURE" \
+              --body "Automatic PR: Conflicts occurred while reverting $COMMIT from branch '$FEATURE'. Please resolve manually."
+
+            echo "conflict=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "conflict=false" >> $GITHUB_OUTPUT
+
+      - name: Push revert to dev
+        if: steps.revert.outputs.conflict == 'false'
+        run: |
+          git pull origin dev --rebase
+          git push origin dev
