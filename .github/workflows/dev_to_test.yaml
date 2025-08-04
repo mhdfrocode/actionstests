@@ -1,5 +1,4 @@
-
-name: manual-revert-workflow
+name: dev_to_test
 
 on:
   workflow_run:
