@@ -1,4 +1,4 @@
-name: manual-revert_2
+name: manual-revert
 
 on:
   workflow_dispatch:
@@ -17,9 +17,10 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.PAT }}
-      - name: pull_last_code
-        run: |
-          git pull        
+
+      - name: Pull latest code
+        run: git pull
+
       - name: Normalize branch name
         id: normalize
         run: |
@@ -29,7 +30,6 @@ jobs:
             exit 1
           fi
           echo "normalized_branch=$BRANCH_NAME" >> $GITHUB_OUTPUT
-
       - name: Switch to dev
         run: |
           git fetch origin dev
@@ -40,7 +40,7 @@ jobs:
         id: find_commit
         run: |
           PATTERN="${{ steps.normalize.outputs.normalized_branch }}"
-          COMMIT=$(git log dev --grep="from .*$PATTERN" --pretty=%H -n 1)
+          COMMIT=$(git log dev --grep="from .*${PATTERN}" --pretty=%H -i -n 1)
           if [ -z "$COMMIT" ]; then
             echo "No squash merge commit found in dev for '$PATTERN'"
             exit 1
@@ -70,12 +70,16 @@ jobs:
           STATUS=$?
           set -e
 
+          # Check if revert produced any changes
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "No changes after revert. Skipping PR creation."
+            echo "conflict=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
           if [ $STATUS -ne 0 ]; then
             echo "Conflict detected for $COMMIT"
-
             BRANCH="revert-conflict/$FEATURE/$SHORT_HASH-$TIMESTAMP"
-
-            # Do not abort; keep conflict state
             git checkout -b "$BRANCH"
             git push origin "$BRANCH"
 
@@ -83,14 +87,16 @@ jobs:
               --base dev \
               --head "$BRANCH" \
               --title "Conflict while reverting $COMMIT from $FEATURE" \
-              --body "Automatic PR: Conflicts occurred while reverting $COMMIT from branch '$FEATURE'. Please resolve manually."
+              --body "Automatic PR: Conflicts occurred while reverting $COMMIT from branch '$FEATURE'. Please resolve manually." || {
+                echo "PR creation failed. Likely no changes between branches."
+                exit 0
+              }
 
             echo "conflict=true" >> $GITHUB_OUTPUT
             exit 0
           fi
 
           echo "conflict=false" >> $GITHUB_OUTPUT
-
       - name: Push revert to dev
         if: steps.revert.outputs.conflict == 'false'
         run: |
