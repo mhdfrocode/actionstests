@@ -1,4 +1,4 @@
-name: Revert Merge from Branch into Master
+name: Revert_Merge
 
 on:
   workflow_dispatch:
