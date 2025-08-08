@@ -2,7 +2,7 @@ name: dev_to_test
 
 on:
   workflow_run:
-    workflows: ["Revert_Merge"]
+    workflows: ["manual-revert-workflow"]
     types:
       - completed
   workflow_dispatch:
