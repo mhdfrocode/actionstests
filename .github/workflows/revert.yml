@@ -40,7 +40,7 @@ jobs:
         id: find_commit
         run: |
           PATTERN="${{ steps.normalize.outputs.normalized_branch }}"
-          COMMIT=$(git log dev --grep="\bfrom ${PATTERN}\b" --pretty=%H -i -n 1)
+          COMMIT=$(git log dev --grep="^from ${PATTERN}$" --pretty=%H -i -n 1)
           if [ -z "$COMMIT" ]; then
             echo "No squash merge commit found in dev for '$PATTERN'"
             exit 1
