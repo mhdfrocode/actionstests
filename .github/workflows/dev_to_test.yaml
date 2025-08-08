@@ -2,7 +2,7 @@ name: dev_to_test
 
 on:
   workflow_run:
-    workflows: ["manual-revert-workflow"]
+    workflows: ["manual-revert"]
     types:
       - completed
   workflow_dispatch:
