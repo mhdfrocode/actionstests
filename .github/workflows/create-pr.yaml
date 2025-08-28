@@ -1,44 +1,52 @@
-name: Comprehensive PR Automation
+name: Auto PR on feature pushes
 
 on:
   push:
     branches:
-      - "feature/**"  # ✅ Correct branch glob
-  pull_request:
-    types: [opened, reopened, ready_for_review, synchronize] # ✅ Covers all PR activity
+      - "feature/**"
+
+permissions:
+  contents: read
+  pull-requests: write
 
 jobs:
-  create-pr:
-    name: Create Pull Request
+  open-pr:
     runs-on: ubuntu-latest
-    # ✅ Run only when pushing to feature/*
-    if: startsWith(github.ref, 'refs/heads/feature/')
     steps:
-      # Checkout repo
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # Create PR automatically
-      - name: Create Pull Request
-        uses: peter-evans/create-pull-request@v7
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          title: "Automated PR for ${{ github.ref_name }}"
-          body: "This PR was auto-generated from changes on branch **${{ github.ref_name }}**."
-          branch: "${{ github.ref_name }}-auto"
-          labels: auto-generated
-          draft: false
+      - name: Set up GitHub CLI
+        run: |
+          gh --version
 
-  assign-reviewers:
-    name: Assign Reviewers
-    runs-on: ubuntu-latest
-    # ✅ Run only when a PR event happens
-    if: github.event_name == 'pull_request'
-    steps:
-      # Assign reviewers
-      - name: Assign Reviewers
-        uses: hkusu/review-assign-action@v1
-        with:
-          reviewers: "FroCode"
-          max-num-of-reviewers: 2
-          ready-comment: "Ready for review! Assigned reviewers: <reviewers>"
+      - name: Create or update PR
+        env:
+          GH_TOKEN: ${{ secrets.PAT }} # or use secrets.PAT with repo scope
+        run: |
+          BASE="dev"  # <- change to your real base (e.g., develop)
+          HEAD="${GITHUB_REF_NAME}"
+          TITLE="Automated PR for ${HEAD}"
+          BODY="This PR was auto-generated from changes on branch **${HEAD}**."
+
+          # Try to find existing open PR from HEAD -> BASE
+          set -e
+          PR_NUMBER=$(gh pr list --state open --head "${HEAD}" --base "${BASE}" --json number --jq '.[0].number' || true)
+
+          if [ -n "$PR_NUMBER" ]; then
+            echo "PR #$PR_NUMBER already exists. Updating title/body."
+            gh pr edit "$PR_NUMBER" --title "$TITLE" --body "$BODY"
+          else
+            echo "Creating new PR from ${HEAD} to ${BASE}"
+            gh pr create --base "$BASE" --head "$HEAD" --title "$TITLE" --body "$BODY" --draft=false
+          fi
+
+      - name: Assign reviewers
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.PAT }}
+        run: |
+          BASE="dev"
+          HEAD="${GITHUB_REF_NAME}"
+          PR_NUMBER=$(gh pr list --state open --head "${HEAD}" --base "${BASE}" --json number --jq '.[0].number')
+          gh pr edit "$PR_NUMBER" --add-reviewer FroCode
+          gh pr comment "$PR_NUMBER" --body "Ready for review! Assigned reviewers: @FroCode"
