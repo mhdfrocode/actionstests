@@ -1,45 +1,70 @@
-name: Auto PR from feature/* to dev
+name: Auto PR on feature pushes
 
 on:
   push:
     branches:
       - "feature/**"
+  # Optional: allow manual run for testing
   workflow_dispatch:
 
+# Make sure the GITHUB_TOKEN can write PRs and contents
 permissions:
   contents: write
   pull-requests: write
 
 jobs:
-  open-or-update-pr:
+  open-pr:
+    name: Create/Update PR and assign reviewers
     runs-on: ubuntu-latest
+
+    # Provide GH_TOKEN to all steps (gh will auto-use it)
+    env:
+      GH_TOKEN: ${{ github.token }} # or use: ${{ secrets.GITHUB_TOKEN }}
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Ensure GitHub CLI is available
-        run: gh --version
-
-      - name: Create or update PR into dev
-        env:
-          GH_TOKEN: ${{ secrets.PAT }}  # or use secrets.PAT with repo scope if needed
+      - name: Verify gh auth
         run: |
-          set -e
-          BASE="dev"
+          set -euo pipefail
+          gh --version
+          gh auth status
+
+      - name: Create or update PR
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="main"                                 # <-- change if needed
           HEAD="${GITHUB_REF_NAME}"
           TITLE="Automated PR for ${HEAD}"
-          BODY="Auto PR from **${HEAD}** to **${BASE}**."
+          BODY="This PR was auto-generated from changes on branch **${HEAD}**."
 
-          # Find existing open PR from HEAD -> BASE
+          # Find existing open PR from HEAD -> BASE (returns empty if none)
           PR_NUMBER=$(gh pr list \
             --state open \
-            --head "$HEAD" \
-            --base "$BASE" \
+            --head "${HEAD}" \
+            --base "${BASE}" \
             --json number \
             --jq '.[0].number' || true)
 
-          if [ -n "$PR_NUMBER" ]; then
+          if [[ -n "${PR_NUMBER:-}" ]]; then
             echo "PR #$PR_NUMBER already exists. Updating title/body."
             gh pr edit "$PR_NUMBER" --title "$TITLE" --body "$BODY"
           else
             echo "Creating new PR from ${HEAD} to ${BASE}"
             gh pr create --base "$BASE" --head "$HEAD" --title "$TITLE" --body "$BODY" --draft=false
+            # capture created PR number
+            PR_NUMBER=$(gh pr list --state open --head "${HEAD}" --base "${BASE}" --json number --jq '.[0].number')
+          fi
+
+          echo "PR_NUMBER=${PR_NUMBER}" >> "$GITHUB_ENV"
+
+      - name: Assign reviewers
+        if: success() && env.PR_NUMBER != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Assigning reviewers to PR #${PR_NUMBER}"
+          gh pr edit "${PR_NUMBER}" --add-reviewer FroCode
+          gh pr comment "${PR_NUMBER}" --body "Ready for review! Assigned reviewers: @FroCode"
