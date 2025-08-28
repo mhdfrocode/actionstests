@@ -1,36 +1,41 @@
-name: Auto PR on feature pushes
+name: Auto PR from feature/* to dev
 
 on:
   push:
     branches:
       - "feature/**"
+  workflow_dispatch:
 
 permissions:
   contents: read
   pull-requests: write
 
 jobs:
-  open-pr:
+  open-or-update-pr:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up GitHub CLI
-        run: |
-          gh --version
+      - name: Ensure GitHub CLI is available
+        run: gh --version
 
-      - name: Create or update PR
+      - name: Create or update PR into dev
         env:
-          GH_TOKEN: ${{ secrets.PAT }} # or use secrets.PAT with repo scope
+          GH_TOKEN: ${{ secrets.PAT }}  # or use secrets.PAT with repo scope if needed
         run: |
-          BASE="dev"  # <- change to your real base (e.g., develop)
+          set -e
+          BASE="dev"
           HEAD="${GITHUB_REF_NAME}"
           TITLE="Automated PR for ${HEAD}"
-          BODY="This PR was auto-generated from changes on branch **${HEAD}**."
+          BODY="Auto PR from **${HEAD}** to **${BASE}**."
 
-          # Try to find existing open PR from HEAD -> BASE
-          set -e
-          PR_NUMBER=$(gh pr list --state open --head "${HEAD}" --base "${BASE}" --json number --jq '.[0].number' || true)
+          # Find existing open PR from HEAD -> BASE
+          PR_NUMBER=$(gh pr list \
+            --state open \
+            --head "$HEAD" \
+            --base "$BASE" \
+            --json number \
+            --jq '.[0].number' || true)
 
           if [ -n "$PR_NUMBER" ]; then
             echo "PR #$PR_NUMBER already exists. Updating title/body."
@@ -38,15 +43,3 @@ jobs:
           else
             echo "Creating new PR from ${HEAD} to ${BASE}"
             gh pr create --base "$BASE" --head "$HEAD" --title "$TITLE" --body "$BODY" --draft=false
-          fi
-
-      - name: Assign reviewers
-        if: success()
-        env:
-          GH_TOKEN: ${{ secrets.PAT }}
-        run: |
-          BASE="dev"
-          HEAD="${GITHUB_REF_NAME}"
-          PR_NUMBER=$(gh pr list --state open --head "${HEAD}" --base "${BASE}" --json number --jq '.[0].number')
-          gh pr edit "$PR_NUMBER" --add-reviewer FroCode
-          gh pr comment "$PR_NUMBER" --body "Ready for review! Assigned reviewers: @FroCode"
