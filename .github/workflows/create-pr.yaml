@@ -1,0 +1,44 @@
+name: Comprehensive PR Automation
+
+on:
+  push:
+    branches:
+      - "feature/**"  # ✅ Correct branch glob
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize] # ✅ Covers all PR activity
+
+jobs:
+  create-pr:
+    name: Create Pull Request
+    runs-on: ubuntu-latest
+    # ✅ Run only when pushing to feature/*
+    if: startsWith(github.ref, 'refs/heads/feature/')
+    steps:
+      # Checkout repo
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Create PR automatically
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          title: "Automated PR for ${{ github.ref_name }}"
+          body: "This PR was auto-generated from changes on branch **${{ github.ref_name }}**."
+          branch: "${{ github.ref_name }}-auto"
+          labels: auto-generated
+          draft: false
+
+  assign-reviewers:
+    name: Assign Reviewers
+    runs-on: ubuntu-latest
+    # ✅ Run only when a PR event happens
+    if: github.event_name == 'pull_request'
+    steps:
+      # Assign reviewers
+      - name: Assign Reviewers
+        uses: hkusu/review-assign-action@v1
+        with:
+          reviewers: "FroCode"
+          max-num-of-reviewers: 2
+          ready-comment: "Ready for review! Assigned reviewers: <reviewers>"

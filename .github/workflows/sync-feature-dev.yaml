@@ -1,0 +1,66 @@
+name: Sync All Feature Branches with Dev
+
+on:
+  push:
+    branches:
+      - dev  # Trigger workflow when 'dev' is updated
+
+permissions:
+  contents: write
+
+jobs:
+  sync-feature-branches:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Checkout the repository with full history
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Step 2: Configure Git user for commits
+      - name: Configure Git User
+        run: |
+          git config --global user.name "GitHub Actions Bot"
+          git config --global user.email "actions@github.com"
+
+      # Step 3: Fetch all branches
+      - name: Fetch All Branches
+        run: git fetch --all
+
+      # Step 4: Find all feature branches dynamically
+      - name: Get Feature Branches
+        id: features
+        run: |
+          echo "FEATURE_BRANCHES=$(git branch -r | grep 'origin/feature/' | sed 's|origin/||' | tr '\n' ' ')" >> $GITHUB_ENV
+
+      # Step 5: Sync each feature branch with dev
+      - name: Sync Feature Branches
+        run: |
+          for branch in $FEATURE_BRANCHES; do
+            echo "Syncing $branch with dev ..."
+            git checkout "$branch"
+
+            # Merge dev into the feature branch
+            if ! git merge --no-commit --no-ff origin/dev; then
+              echo "Merge conflict detected in $branch. Skipping..."
+              git merge --abort
+              continue
+            fi
+
+            # Commit if there are changes
+            if git diff-index --quiet HEAD; then
+              echo "$branch is already up-to-date."
+            else
+              git commit -m "Auto-sync $branch with dev"
+              git push origin "$branch"
+              echo "Successfully synced $branch with dev."
+            fi
+          done
+
+      # Step 6: Run tests (optional, adjust if needed)
+      - name: Run Tests
+        run: |
+          npm install
+          npm test

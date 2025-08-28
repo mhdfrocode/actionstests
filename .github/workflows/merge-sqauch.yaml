@@ -28,6 +28,9 @@ jobs:
           echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
           sudo apt update
           sudo apt install gh -y
+          gh version
+        env:
+          GH_TOKEN: ${{ secrets.PAT }}
 
       # Checkout repository
       - name: Checkout repository
@@ -47,11 +50,11 @@ jobs:
         id: pr_info
         run: |
           if ! [[ "${{ github.event.inputs.pr_number }}" =~ ^[0-9]+$ ]]; then
-            echo " Invalid PR number: ${{ github.event.inputs.pr_number }}"
+            echo "❌ Invalid PR number: ${{ github.event.inputs.pr_number }}"
             exit 1
           fi
           PR_INFO=$(gh pr view ${{ github.event.inputs.pr_number }} --json headRefName,baseRefName -q "{ \"branch_name\": .headRefName, \"base_branch\": .baseRefName }" || {
-            echo "Failed to fetch PR #${{ github.event.inputs.pr_number }}. Ensure PR exists and PAT has correct permissions."
+            echo "❌ Failed to fetch PR #${{ github.event.inputs.pr_number }}. Ensure PR exists and PAT has correct permissions."
             exit 1
           })
           BRANCH_NAME=$(echo "$PR_INFO" | jq -r .branch_name)
@@ -61,7 +64,7 @@ jobs:
           echo "PR head branch: $BRANCH_NAME"
           echo "PR base branch: $BASE_BRANCH"
           if [ "$BASE_BRANCH" != "dev" ]; then
-            echo "PR #${{ github.event.inputs.pr_number }} base branch is '$BASE_BRANCH', expected 'dev'"
+            echo "❌ PR #${{ github.event.inputs.pr_number }} base branch is '$BASE_BRANCH', expected 'dev'"
             exit 1
           fi
         env:
@@ -71,20 +74,25 @@ jobs:
       - name: Check if commit exists
         id: check_commit
         run: |
-          git fetch origin dev
+          git fetch origin dev --force
           git checkout dev
           LAST_COMMIT_MSG=$(git log -1 --pretty=%s origin/dev)
           COMMIT_MSG="from ${{ env.branch_name }}"
           REVERT_MSG="Revert 'from ${{ env.branch_name }}'"
-          echo "Last commit message: $LAST_COMMIT_MSG"
-          if [ "$LAST_COMMIT_MSG" = "$COMMIT_MSG" ]; then
-            echo "Last commit is from ${{ env.branch_name }}, triggering revert workflow"
+          echo "Raw last commit message: '$LAST_COMMIT_MSG'"
+          # Normalize commit messages for comparison (trim whitespace, convert to lowercase)
+          NORMALIZED_LAST_COMMIT_MSG=$(echo "$LAST_COMMIT_MSG" | tr -s ' ' | tr '[:upper:]' '[:lower:]')
+          NORMALIZED_COMMIT_MSG=$(echo "$COMMIT_MSG" | tr -s ' ' | tr '[:upper:]' '[:lower:]')
+          NORMALIZED_REVERT_MSG=$(echo "$REVERT_MSG" | tr -s ' ' | tr '[:upper:]' '[:lower:]')
+          echo "Normalized last commit message: '$NORMALIZED_LAST_COMMIT_MSG'"
+          if [ "$NORMALIZED_LAST_COMMIT_MSG" = "$NORMALIZED_COMMIT_MSG" ]; then
+            echo "✅ Last commit matches '$COMMIT_MSG', triggering revert workflow"
             echo "duplicate=true" >> $GITHUB_OUTPUT
-          elif [ "$LAST_COMMIT_MSG" = "$REVERT_MSG" ]; then
-            echo "ℹLast commit is a revert of ${{ env.branch_name }}, skipping revert workflow"
+          elif [ "$NORMALIZED_LAST_COMMIT_MSG" = "$NORMALIZED_REVERT_MSG" ]; then
+            echo "ℹ️ Last commit matches '$REVERT_MSG', skipping revert workflow as changes are already reverted"
             echo "duplicate=false" >> $GITHUB_OUTPUT
           else
-            echo "ℹNo duplicate commit or revert found in last commit"
+            echo "ℹ️ Last commit is '$LAST_COMMIT_MSG', no duplicate or revert found, skipping revert workflow"
             echo "duplicate=false" >> $GITHUB_OUTPUT
           fi
         env:
@@ -110,9 +118,9 @@ jobs:
           while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
             STATUS=$(gh run list --workflow manual-revert-workflow.yml --json status,conclusion -q '.[0] | select(.status == "completed") | .conclusion')
             if [ -n "$STATUS" ]; then
-              echo " Revert workflow completed with conclusion: $STATUS"
+              echo "✅ Revert workflow completed with conclusion: $STATUS"
               if [ "$STATUS" != "success" ]; then
-                echo " Revert workflow failed!"
+                echo "❌ Revert workflow failed!"
                 exit 1
               fi
               break
@@ -122,40 +130,36 @@ jobs:
             sleep 10
           done
           if [ $ATTEMPTS -eq $MAX_ATTEMPTS ]; then
-            echo " Timeout waiting for revert workflow to complete"
+            echo "❌ Timeout waiting for revert workflow to complete"
             exit 1
           fi
         env:
           GH_TOKEN: ${{ secrets.PAT }}
 
       # Check PR mergeability and status checks
-      - name: Merge PR
-        if: steps.check_mergeability.outputs.mergeable == 'true'
+      - name: Check PR mergeability and status checks
+        id: check_mergeability
         run: |
-            echo "Attempting to squash merge PR #${{ github.event.inputs.pr_number }} into dev..."
-            PR_TITLE=$(gh pr view ${{ github.event.inputs.pr_number }} --json title -q ".title")
-            set +e
-            for attempt in {1..3}; do
-            gh pr merge ${{ github.event.inputs.pr_number }} --squash --body " Successfully squash merged into dev: $PR_TITLE"
-            STATUS=$?
-            if [ $STATUS -eq 0 ]; then
-                echo "Merge succeeded on attempt $attempt"
-                echo "conflict=false" >> $GITHUB_OUTPUT
-                break
-            fi
-            echo "⚠️ Merge failed on attempt $attempt, retrying in 10s..."
-            ERROR_MSG=$(gh pr merge ${{ github.event.inputs.pr_number }} --squash --body "Test merge" 2>&1 || true)
-            echo "Error message: $ERROR_MSG"
-            sleep 10
-            done
-            set -e
-            if [ $STATUS -ne 0 ]; then
-            echo " Merge failed after 3 attempts!"
-            echo "conflict=true" >> $GITHUB_OUTPUT
+          echo "Checking PR #${{ github.event.inputs.pr_number }} mergeability..."
+          MERGEABLE_STATE=$(gh pr view ${{ github.event.inputs.pr_number }} --json mergeable -q ".mergeable")
+          echo "PR mergeable state: $MERGEABLE_STATE"
+          if [ "$MERGEABLE_STATE" != "MERGEABLE" ]; then
+            echo "❌ PR #${{ github.event.inputs.pr_number }} is not mergeable (state: $MERGEABLE_STATE)."
+            echo "mergeable=false" >> $GITHUB_OUTPUT
             exit 0
-            fi
+          fi
+          echo "Checking required status checks..."
+          STATUS_CHECKS=$(gh pr view ${{ github.event.inputs.pr_number }} --json statusCheckRollup -q ".statusCheckRollup[] | select(.status == \"FAILURE\" or .status == \"PENDING\") | .name" || echo "")
+          if [ -n "$STATUS_CHECKS" ]; then
+            echo "❌ Required status checks are failing or pending: $STATUS_CHECKS"
+            echo "mergeable=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          echo "✅ PR is mergeable and status checks are passing"
+          echo "mergeable=true" >> $GITHUB_OUTPUT
         env:
-            GH_TOKEN: ${{ secrets.PAT }}
+          GH_TOKEN: ${{ secrets.PAT }}
+
       # Perform squash merge into dev using gh pr merge
       - name: Squash merge PR into dev
         id: merge
@@ -164,21 +168,21 @@ jobs:
           echo "Attempting to squash merge PR #${{ github.event.inputs.pr_number }} into dev..."
           set +e
           for attempt in {1..3}; do
-            gh pr merge ${{ github.event.inputs.pr_number }} --squash --body "Successfully squash merged into dev with commit: from ${{ env.branch_name }}"
+            gh pr merge ${{ github.event.inputs.pr_number }} --squash --body "✅ Successfully squash merged into dev with commit: from ${{ env.branch_name }} --subject 'from ${{ env.branch_name }}'"
             STATUS=$?
             if [ $STATUS -eq 0 ]; then
-              echo " Merge succeeded on attempt $attempt"
+              echo "✅ Merge succeeded on attempt $attempt"
               echo "conflict=false" >> $GITHUB_OUTPUT
               break
             fi
-            echo " Merge failed on attempt $attempt, retrying in 10s..."
+            echo "⚠️ Merge failed on attempt $attempt, retrying in 10s..."
             ERROR_MSG=$(gh pr merge ${{ github.event.inputs.pr_number }} --squash --body "Test merge" 2>&1 || true)
             echo "Error message: $ERROR_MSG"
             sleep 10
           done
           set -e
           if [ $STATUS -ne 0 ]; then
-            echo " Merge failed after 3 attempts!"
+            echo "❌ Merge failed after 3 attempts!"
             echo "conflict=true" >> $GITHUB_OUTPUT
             exit 0
           fi
@@ -189,6 +193,6 @@ jobs:
       - name: Fail on conflict or merge failure
         if: steps.merge.outputs.conflict == 'true'
         run: |
-          echo " Merge conflict or failure detected when merging ${{ env.branch_name }} into dev."
+          echo "❌ Merge conflict or failure detected when merging ${{ env.branch_name }} into dev."
           echo "Please resolve the conflict manually via a PR or check the workflow logs for details."
           exit 1
